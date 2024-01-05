@@ -7,6 +7,8 @@
 #include <fstream>
 #include <unistd.h>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 // --------------------------------------------------------------------
 // --------------------------------------------------------------------
@@ -26,20 +28,23 @@ enum OperandKind {
     SHIFT,
     EXTEND,
     COND,
+    MEM_OP_BASE,
+    MEM_OP_BASE_PRE,
+    MEM_OP_IMM_OFFSET,
+    MEM_OP_REGI_OFFSET,
+    MEM_OP_IMM_OFFSET_PRE,
 };
 
 struct Operand {
     OperandKind kind;
-
-    // register
     int regi_bits;
-
     int imm;
-
-    // shift|extend|cond val
-    int val;
-    // shift|extend amount
-    int amount;
+    int val; // shift|extend|cond val
+    int amount; // shift|extend amount
+    // ref
+    Operand* base_register;
+    Operand* offset; // offset takes one of three formats { Immediate | Register }
+    Operand* extend_offset;
 };
 
 enum ShiftType {
@@ -79,27 +84,54 @@ enum CondType {
     AL = 0b1110,
 };
 
-std::unordered_map<std::string, uint32_t> regi_bits = {
-    // 64bit registers
-    {"x0", 0}, {"x1", 1}, {"x2", 2}, {"x3", 3}, {"x4", 4}, {"x5", 5}, {"x6", 6}, {"x7", 7},
-    {"x8", 8}, {"x9", 9}, {"x10", 10}, {"x11", 11}, {"x12", 12}, {"x13", 13}, {"x14", 14}, {"x15", 15},
-    {"x16", 16}, {"x17", 17}, {"x18", 18}, {"x19", 19}, {"x20", 20}, {"x21", 21}, {"x22", 22}, {"x23", 23},
-    {"x24", 24}, {"x25", 25}, {"x26", 26}, {"x27", 27}, {"x28", 28}, {"x29", 29}, {"x30", 30}, {"sp", 31},
-
-    // 32bit registers
-    {"w0", 0}, {"w1", 1}, {"w2", 2}, {"w3", 3}, {"w4", 4}, {"w5", 5}, {"w6", 6}, {"w7", 7}, 
-    {"w8", 8}, {"w9", 9}, {"w10", 10}, {"w11", 11}, {"w12", 12}, {"w13", 13}, {"w14", 14}, {"w15", 15}, 
-    {"w16", 16}, {"w17", 17}, {"w18", 18}, {"w19", 19}, {"w20", 20}, {"w21", 21}, {"w22", 22}, {"w23", 23}, 
-    {"w24", 24}, {"w25", 25}, {"w26", 26}, {"w27", 27}, {"w28", 28}, {"w29", 29}, {"w30", 30}, {"wsp", 31},
-};
-
-Operand *new_regi(OperandKind kind, std::string regi_name) {
+Operand* new_regi(OperandKind kind, int regi_bits) {
     Operand *op = new Operand;
     op->kind = kind;
-    op->regi_bits = regi_bits[regi_name];
+    op->regi_bits = regi_bits;
 
     return op;
 }
+
+std::unordered_map<std::string, Operand*> registers = {
+    // 64bit registers
+    {"x0",  new_regi(XR, 0)},  {"x1",  new_regi(XR, 1)},  {"x2",  new_regi(XR, 2)},  {"x3",  new_regi(XR, 3)},
+    {"x4",  new_regi(XR, 4)},  {"x5",  new_regi(XR, 5)},  {"x6",  new_regi(XR, 6)},  {"x7",  new_regi(XR, 7)},
+    {"x8",  new_regi(XR, 8)},  {"x9",  new_regi(XR, 9)},  {"x10", new_regi(XR, 10)}, {"x11", new_regi(XR, 11)},
+    {"x12", new_regi(XR, 12)}, {"x13", new_regi(XR, 13)}, {"x14", new_regi(XR, 14)}, {"x15", new_regi(XR, 15)},
+    {"x16", new_regi(XR, 16)}, {"x17", new_regi(XR, 17)}, {"x18", new_regi(XR, 18)}, {"x19", new_regi(XR, 19)},
+    {"x20", new_regi(XR, 20)}, {"x21", new_regi(XR, 21)}, {"x22", new_regi(XR, 22)}, {"x23", new_regi(XR, 23)},
+    {"x24", new_regi(XR, 24)}, {"x25", new_regi(XR, 25)}, {"x26", new_regi(XR, 26)}, {"x27", new_regi(XR, 27)},
+    {"x28", new_regi(XR, 28)}, {"x29", new_regi(XR, 29)}, {"x30", new_regi(XR, 30)}, {"sp",  new_regi(XSP, 31)},
+
+    // 32bit registers
+    {"w0",  new_regi(WR, 0)},  {"w1",  new_regi(WR, 1)},  {"w2",  new_regi(WR, 2)},  {"w3",  new_regi(WR, 3)},
+    {"w4",  new_regi(WR, 4)},  {"w5",  new_regi(WR, 5)},  {"w6",  new_regi(WR, 6)},  {"w7",  new_regi(WR, 7)},
+    {"w8",  new_regi(WR, 8)},  {"w9",  new_regi(WR, 9)},  {"w10", new_regi(WR, 10)}, {"w11", new_regi(WR, 11)},
+    {"w12", new_regi(WR, 12)}, {"w13", new_regi(WR, 13)}, {"w14", new_regi(WR, 14)}, {"w15", new_regi(WR, 15)},
+    {"w16", new_regi(WR, 16)}, {"w17", new_regi(WR, 17)}, {"w18", new_regi(WR, 18)}, {"w19", new_regi(WR, 19)},
+    {"w20", new_regi(WR, 20)}, {"w21", new_regi(WR, 21)}, {"w22", new_regi(WR, 22)}, {"w23", new_regi(WR, 23)},
+    {"w24", new_regi(WR, 24)}, {"w25", new_regi(WR, 25)}, {"w26", new_regi(WR, 26)}, {"w27", new_regi(WR, 27)},
+    {"w28", new_regi(WR, 28)}, {"w29", new_regi(WR, 29)}, {"w30", new_regi(WR, 30)}, {"wsp", new_regi(WSP, 31) }
+};
+
+std::unordered_map<std::string, ShiftType> shift_types = {
+    {"LSL", LSL},
+    {"LSR", LSR},
+    {"ASR", ASR},
+    {"RESERVED", RESERVED},
+    {"ROR", ROR},
+};
+
+std::unordered_map<std::string, ExtendType> extend_types = {
+    {"UXTB", UXTB},
+    {"UXTH", UXTH},
+    {"UXTW", UXTW},
+    {"UXTX", UXTX},
+    {"SXTB", SXTB},
+    {"SXTH", SXTH},
+    {"SXTW", SXTW},
+    {"SXTX", SXTX},
+};
 
 Operand *new_shift(ShiftType shift_type, int amount) {
     Operand *op = new Operand;
@@ -140,23 +172,27 @@ Operand *new_imm(int imm) {
     exit(1);
 }
 
-#define is_xr(operands, i)        (operands[i]->kind == XR)
-#define is_wr(operands, i)        (operands[i]->kind == WR)
-#define is_xr_or_xsp(operands, i) (operands[i]->kind == XR || operands[i]->kind == XSP)
-#define is_wr_or_wsp(operands, i) (operands[i]->kind == WR || operands[i]->kind == WSP)
-#define is_shift(operands, i)     (operands[i]->kind == SHIFT)
-#define is_extend(operands, i)    (operands[i]->kind == EXTEND)
-#define is_imm(operands, i)       (operands[i]->kind == IMM)
-#define is_cond(operands, i)      (operands[i]->kind == COND)
+#define is_xr(operands, i)                   (operands[i]->kind == XR)
+#define is_wr(operands, i)                   (operands[i]->kind == WR)
+#define is_xr_or_xsp(operands, i)            (operands[i]->kind == XR || operands[i]->kind == XSP)
+#define is_wr_or_wsp(operands, i)            (operands[i]->kind == WR || operands[i]->kind == WSP)
+#define is_shift(operands, i)                (operands[i]->kind == SHIFT)
+#define is_extend(operands, i)               (operands[i]->kind == EXTEND)
+#define is_imm(operands, i)                  (operands[i]->kind == IMM)
+#define is_cond(operands, i)                 (operands[i]->kind == COND)
+#define is_mem_op_base(operands, i)             (operands[i]->kind == MEM_OP_BASE || (operands[i]->kind == MEM_OP_IMM_OFFSET && operands[i]->offset->imm == 0))
+#define is_mem_op_imm_offset(operands, i)       (operands[i]->kind == MEM_OP_IMM_OFFSET)
+#define is_mem_op_imm_offset_pre(operands, i)   (operands[i]->kind == MEM_OP_IMM_OFFSET_PRE)
+#define is_mem_op_regi_offset(operands, i)      (operands[i]->kind == MEM_OP_REGI_OFFSET)
 
-#define next_op_shift(operands, i)  ((operand_length > i+1) ? is_shift(operands, i+1) : true)
-#define next_op_extend(operands, i) ((operand_length > i+1) ? is_extend(operands, i+1) : true)
+#define next_op_shift(operands, i)           ((operand_length > i+1) ? is_shift(operands, i+1) : true)
+#define next_op_extend(operands, i)          ((operand_length > i+1) ? is_extend(operands, i+1) : true)
 
-#define is_xr_shift(operands, i)   (is_xr(operands, i) && next_op_shift(operands, i))
-#define is_wr_shift(operands, i)   (is_wr(operands, i) && next_op_shift(operands, i))
-#define is_imm_shift(operands, i)  (is_imm(operands, i) && next_op_shift(operands, i))
-#define is_xr_extend(operands, i)  (is_xr(operands, i) && next_op_extend(operands, i))
-#define is_wr_extend(operands, i)  (is_wr(operands, i) && next_op_extend(operands, i))
+#define is_xr_shift(operands, i)             (is_xr(operands, i) && next_op_shift(operands, i))
+#define is_wr_shift(operands, i)             (is_wr(operands, i) && next_op_shift(operands, i))
+#define is_imm_shift(operands, i)            (is_imm(operands, i) && next_op_shift(operands, i))
+#define is_xr_extend(operands, i)            (is_xr(operands, i) && next_op_extend(operands, i))
+#define is_wr_extend(operands, i)            (is_wr(operands, i) && next_op_extend(operands, i))
 
 #define pattern1(A)             (operand_length >= 1) && \
                                 is_##A(operands, 0)
@@ -190,8 +226,19 @@ CondType invert_cond(CondType cond) {
     return inverted_condtype[cond];
 }
 
-#define ENCODE_REGI(operand_idx, b)               (operands[operand_idx]->regi_bits << b)
-#define ENCODE_SHIFTS(operand_idx, b1, b2)        ((operand_length > operand_idx) ? (operands[operand_idx]->val << b1) | (operands[operand_idx]->amount << b2) : 0)
+#define ENCODE_REGI(operand_idx, b)                 (operands[operand_idx]->regi_bits << b)
+#define ENCODE_SHIFTS(operand_idx, b1, b2)          ((operand_length > operand_idx) ? (operands[operand_idx]->val << b1) | (operands[operand_idx]->amount << b2) : 0)
+
+#define ENCODE_MEM_OP_BASE(operand_idx, b)             (operands[operand_idx]->base_register->regi_bits << b)
+
+#define ENCODE_MEM_OP_IMM9_OFFSET(operand_idx, b1, b2)  (operands[operand_idx]->base_register->regi_bits << b1) | ((operands[operand_idx]->offset->imm & 0b111111111) << b2)
+#define ENCODE_MEM_OP_IMM12_OFFSET(operand_idx, b1, b2) (operands[operand_idx]->base_register->regi_bits << b1) | ((operands[operand_idx]->offset->imm & 0b111111111111) << b2)
+
+#define ENCODE_MEM_OP_DIV_IMM7_OFFSET(operand_idx, b1, b2, div)  (operands[operand_idx]->base_register->regi_bits << b1) | (((operands[operand_idx]->offset->imm / div) & 0b1111111) << b2)
+#define ENCODE_MEM_OP_DIV_IMM9_OFFSET(operand_idx, b1, b2, div)  (operands[operand_idx]->base_register->regi_bits << b1) | (((operands[operand_idx]->offset->imm / div) & 0b111111111) << b2)
+#define ENCODE_MEM_OP_DIV_IMM12_OFFSET(operand_idx, b1, b2, div) (operands[operand_idx]->base_register->regi_bits << b1) | (((operands[operand_idx]->offset->imm / div) & 0b111111111111) << b2)
+
+#define ENCODE_MEM_OP_REGI_OFFSET(operand_idx, b1, b2, b3, b4, div_amount)   (operands[operand_idx]->base_register->regi_bits << b1) | (operands[operand_idx]->offset->regi_bits << b2) | (operands[operand_idx]->extend_offset->val << b3) | ((operands[operand_idx]->extend_offset->amount / div_amount) << b4)
 
 // imm
 #define ENCODE_IMM4(operand_idx, b)               (operands[operand_idx]->imm & 0b1111) << b
@@ -204,6 +251,8 @@ CondType invert_cond(CondType cond) {
 #define ENCODE_IMM11(operand_idx, b)              (operands[operand_idx]->imm & 0b11111111111) << b
 #define ENCODE_IMM12(operand_idx, b)              (operands[operand_idx]->imm & 0b111111111111) << b
 #define ENCODE_IMM16(operand_idx, b)              (operands[operand_idx]->imm & 0b1111111111111111) << b
+
+#define ENCODE_DIV_IMM7(operand_idx, b, div)      ((operands[operand_idx]->imm / div) & 0b1111111) << b
 
 #define ENCODE_SUB_IMM6(operand_idx, sub, b)      ((sub - operands[operand_idx]->imm) & 0b111111) << b
 #define ENCODE_NEG_MOD_IMM6(operand_idx, mod, b)  (((-operands[operand_idx]->imm) % mod) & 0b111111) << b
@@ -232,36 +281,28 @@ static std::unordered_map<std::string, std::function<uint32_t(Operand**, int)>> 
         unreachable();
     }},
     {"add", [](Operand** operands, int operand_length) {
-        // ADD (shifted register)
         if (pattern3(xr, xr, xr_shift))                 return (uint32_t)0b10001011000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_SHIFTS(3, 22, 10); // #2
         if (pattern3(wr, wr, wr_shift))                 return (uint32_t)0b00001011000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_SHIFTS(3, 22, 10); // #2
-        //// ADD (immediate)
         if (pattern3(xr_or_xsp, xr_or_xsp, imm_shift))  return (uint32_t)0b10010001000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_IMM12(2, 10) | ENCODE_LSL_SHIFTS(3, 12, 22); // #3
         if (pattern3(wr_or_wsp, wr_or_wsp, imm_shift))  return (uint32_t)0b00010001000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_IMM12(2, 10) | ENCODE_LSL_SHIFTS(3, 12, 22); // #3
-        //// ADD (extened register)
         if (pattern3(wr_or_wsp, wr_or_wsp, wr_extend))  return (uint32_t)0b00001011001000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_EXTENDW(3, 13, 10); // #4
         if (pattern3(xr_or_xsp, xr_or_xsp, xr_extend))  return (uint32_t)0b10001011001000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_EXTENDX(3, 13, 10); // #5
         if (pattern3(xr_or_xsp, xr_or_xsp, wr_extend))  return (uint32_t)0b10001011001000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_EXTENDW(3, 13, 10); // #4
         unreachable();
     }},
     {"adds", [](Operand** operands, int operand_length) {
-        // ADD (shifted register)
         if (pattern3(xr, xr, xr_shift))                 return (uint32_t)0b10101011000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_SHIFTS(3, 22, 10); // #2
         if (pattern3(wr, wr, wr_shift))                 return (uint32_t)0b00101011000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_SHIFTS(3, 22, 10); // #2
-        // ADD (immediate)
         if (pattern3(xr, xr_or_xsp, imm_shift))         return (uint32_t)0b10110001000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_IMM12(2, 10) | ENCODE_LSL_SHIFTS(3, 12, 22); // #3
         if (pattern3(wr, wr_or_wsp, imm_shift))         return (uint32_t)0b00110001000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_IMM12(2, 10) | ENCODE_LSL_SHIFTS(3, 12, 22); // #3
-        // ADD (extened register)
         if (pattern3(wr, wr_or_wsp, wr_extend))         return (uint32_t)0b00101011001000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_EXTENDW(3, 13, 10); // #4
         if (pattern3(xr, xr_or_xsp, xr_extend))         return (uint32_t)0b10101011001000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_EXTENDX(3, 13, 10); // #5
         if (pattern3(xr, xr_or_xsp, wr_extend))         return (uint32_t)0b10101011001000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16) | ENCODE_EXTENDX(3, 13, 10); // #5
         unreachable();
     }},
     {"asr", [](Operand** operands, int operand_length) {
-        // (register)
         if (pattern3(xr, xr, xr))                       return (uint32_t)0b10011010110000000010100000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16); // #1
         if (pattern3(wr, wr, wr))                       return (uint32_t)0b00011010110000000010100000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_REGI(2, 16); // #1
-        // (immediate)
         if (pattern3(xr, xr, imm))                      return (uint32_t)0b10010011010000001111110000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_IMM6(2, 16); // #6
         if (pattern3(wr, wr, imm))                      return (uint32_t)0b00010011010000001111110000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5) | ENCODE_IMM6(2, 16); // #6
         unreachable();
@@ -325,6 +366,45 @@ static std::unordered_map<std::string, std::function<uint32_t(Operand**, int)>> 
     }},
     {"autizb", [](Operand** operands, int operand_length) {
         if (pattern1(xr))                               return (uint32_t)0b11011010110000010011011111100000 | ENCODE_REGI(0, 0); // #7
+        unreachable();
+    }},
+    {"cas", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10001000101000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11001000101000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casa", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10001000111000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11001000111000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00001000111000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01001000111000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10001000111000001111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11001000111000001111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00001000111000001111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01001000111000001111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"casb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00001000101000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"cash", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01001000101000000111110000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
         unreachable();
     }},
     {"ccmn", [](Operand** operands, int operand_length) {
@@ -518,6 +598,663 @@ static std::unordered_map<std::string, std::function<uint32_t(Operand**, int)>> 
     }},
     {"hvc", [](Operand** operands, int operand_length) {
         if (pattern1(imm))                              return (uint32_t)0b11010100000000000000000000000010 | ENCODE_IMM16(0, 5); // #17
+        unreachable();
+    }},
+    {"ldadd", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldadda", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaddlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000000000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldapr", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b10111000101111111100000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        if (pattern2(xr, mem_op_base))                  return (uint32_t)0b11111000101111111100000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldaprb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b00111000101111111100000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldaprh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b01111000101111111100000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldapur", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b10011001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b11011001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldapurb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00011001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldapurh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01011001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldapursb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00011001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b00011001100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldapursh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01011001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b01011001100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldapursw", [](Operand** operands, int operand_length) {
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b10011001100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldar", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b10001000110111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        if (pattern2(xr, mem_op_base))                  return (uint32_t)0b11001000110111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldarb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b00001000110111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldarh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b01001000110111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldaxp", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10001000011111111000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11001000011111111000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldaxr", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b10001000010111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        if (pattern2(xr, mem_op_base))                  return (uint32_t)0b11001000010111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldaxrb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b00001000010111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldaxrh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b01001000010111111111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldclr", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclra", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclral", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclralb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclralh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldclrlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000001000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeor", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeora", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeoral", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeoralb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeoralh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldeorlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000010000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldlar", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b10001000110111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        if (pattern2(xr, mem_op_base))                  return (uint32_t)0b11001000110111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldlarb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b00001000110111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldlarh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b01001000110111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldnp", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_imm_offset))        return (uint32_t)0b00101000010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 4);
+        if (pattern3(xr, xr, mem_op_imm_offset))        return (uint32_t)0b10101000010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 8);
+        unreachable();
+    }},
+    {"ldp", [](Operand** operands, int operand_length) {
+        if (pattern4(wr, wr, mem_op_base, imm))         return (uint32_t)0b00101000110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5) | ENCODE_DIV_IMM7(3, 15, 4);
+        if (pattern4(xr, xr, mem_op_base, imm))         return (uint32_t)0b10101000110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5) | ENCODE_DIV_IMM7(3, 15, 8);
+        if (pattern3(wr, wr, mem_op_imm_offset_pre))    return (uint32_t)0b00101001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 4);
+        if (pattern3(xr, xr, mem_op_imm_offset_pre))    return (uint32_t)0b10101001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 8);
+        if (pattern3(wr, wr, mem_op_imm_offset))        return (uint32_t)0b00101001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 4);
+        if (pattern3(xr, xr, mem_op_imm_offset))        return (uint32_t)0b10101001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 8);
+        unreachable();
+    }},
+    {"ldpsw", [](Operand** operands, int operand_length) {
+        if (pattern4(xr, xr, mem_op_base, imm))         return (uint32_t)0b01101000110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5) | ENCODE_DIV_IMM7(3, 15, 4);
+        if (pattern3(xr, xr, mem_op_imm_offset_pre))    return (uint32_t)0b01101001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 4);
+        if (pattern3(xr, xr, mem_op_imm_offset))        return (uint32_t)0b01101001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_DIV_IMM7_OFFSET(2, 5, 15, 4);
+        unreachable();
+    }},
+    {"ldr", [](Operand** operands, int operand_length) {
+        // LDR (immediate)
+        if (pattern3(wr, mem_op_base, imm))             return (uint32_t)0b10111000010000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern3(xr, mem_op_base, imm))             return (uint32_t)0b11111000010000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern2(wr, mem_op_imm_offset_pre))        return (uint32_t)0b10111000010000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset_pre))        return (uint32_t)0b11111000010000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b10111001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM12_OFFSET(1, 5, 10, 4);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b11111001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM12_OFFSET(1, 5, 10, 8);
+        if (pattern2(wr, mem_op_regi_offset))           return (uint32_t)0b10111000011000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 2);
+        if (pattern2(xr, mem_op_regi_offset))           return (uint32_t)0b11111000011000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 3);
+        unreachable();
+    }},
+    {"ldraa", [](Operand** operands, int operand_length) {
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b11111000001000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM9_OFFSET(1, 5, 12, 8);
+        if (pattern2(xr, mem_op_imm_offset_pre))        return (uint32_t)0b11111000001000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM9_OFFSET(1, 5, 12, 8);
+        unreachable();
+    }},
+    {"ldrab", [](Operand** operands, int operand_length) {
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b11111000101000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM9_OFFSET(1, 5, 12, 8);
+        if (pattern2(xr, mem_op_imm_offset_pre))        return (uint32_t)0b11111000101000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM9_OFFSET(1, 5, 12, 8);
+        unreachable();
+    }},
+    {"ldrb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, mem_op_base, imm))             return (uint32_t)0b00111000010000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern2(wr, mem_op_imm_offset_pre))        return (uint32_t)0b00111000010000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00111001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM12_OFFSET(1, 5, 10);
+        if (pattern2(wr, mem_op_regi_offset))           return (uint32_t)0b00111000011000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 1);
+        unreachable();
+    }},
+    {"ldrh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, mem_op_base, imm))             return (uint32_t)0b01111000010000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern2(wr, mem_op_imm_offset_pre))        return (uint32_t)0b01111000010000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01111001010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM12_OFFSET(1, 5, 10, 2);
+        if (pattern2(wr, mem_op_regi_offset))           return (uint32_t)0b01111000011000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 1);
+        unreachable();
+    }},
+    {"ldrsb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, mem_op_base, imm))             return (uint32_t)0b00111000110000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern3(xr, mem_op_base, imm))             return (uint32_t)0b00111000100000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern2(wr, mem_op_imm_offset_pre))        return (uint32_t)0b00111000110000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset_pre))        return (uint32_t)0b00111000100000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00111001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM12_OFFSET(1, 5, 10);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b00111001100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM12_OFFSET(1, 5, 10);
+        if (pattern2(wr, mem_op_regi_offset))           return (uint32_t)0b00111000111000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 1);
+        if (pattern2(xr, mem_op_regi_offset))           return (uint32_t)0b00111000101000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 1);
+        unreachable();
+    }},
+    {"ldrsh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, mem_op_base, imm))             return (uint32_t)0b01111000110000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern3(xr, mem_op_base, imm))             return (uint32_t)0b01111000100000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern2(wr, mem_op_imm_offset_pre))        return (uint32_t)0b01111000110000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset_pre))        return (uint32_t)0b01111000100000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01111001110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM12_OFFSET(1, 5, 10, 2);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b01111001100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM12_OFFSET(1, 5, 10, 2);
+        if (pattern2(wr, mem_op_regi_offset))           return (uint32_t)0b01111000111000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 1);
+        if (pattern2(xr, mem_op_regi_offset))           return (uint32_t)0b01111000101000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 1);
+        unreachable();
+    }},
+    {"ldrsw", [](Operand** operands, int operand_length) {
+        if (pattern3(xr, mem_op_base, imm))             return (uint32_t)0b10111000100000000000010000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5) | ENCODE_IMM9(2, 12);
+        if (pattern2(xr, mem_op_imm_offset_pre))        return (uint32_t)0b10111000100000000000110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b10111001100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_DIV_IMM9_OFFSET(1, 5, 10, 4);
+        if (pattern2(xr, mem_op_regi_offset))           return (uint32_t)0b10111000101000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_REGI_OFFSET(1, 5, 16, 13, 12, 2);
+        unreachable();
+    }},
+    {"ldset", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldseta", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldseth", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsetlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000011000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmax", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxa", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmaxlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000100000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmin", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsmina", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldsminlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000101000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldtr", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b10111000010000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b11111000010000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldtrb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00111000010000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldtrh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01111000010000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldtrsb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00111000110000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b00111000100000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldtrsh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01111000110000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b01111000100000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldtrsw", [](Operand** operands, int operand_length) {
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b10111000100000000000100000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldumax", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxa", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumaxlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000110000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumin", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000001000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000001000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldumina", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000101000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000101000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminab", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000101000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminah", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000101000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminal", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000111000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000111000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminalb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000111000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminalh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000111000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000001000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000001000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminl", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b10111000011000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return (uint32_t)0b11111000011000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminlb", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b00111000011000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"lduminlh", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return (uint32_t)0b01111000011000000111000000000000 | ENCODE_REGI(0, 16) | ENCODE_REGI(1, 0) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldur", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b10111000010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b11111000010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldurb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00111000010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldurh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01111000010000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldursb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b00111000110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b00111000100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldursh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_imm_offset))            return (uint32_t)0b01111000110000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b01111000100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldursw", [](Operand** operands, int operand_length) {
+        if (pattern2(xr, mem_op_imm_offset))            return (uint32_t)0b10111000100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_IMM9_OFFSET(1, 5, 12);
+        unreachable();
+    }},
+    {"ldxp", [](Operand** operands, int operand_length) {
+        if (pattern3(wr, wr, mem_op_base))              return  (uint32_t)0b10001000011111110000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5);
+        if (pattern3(xr, xr, mem_op_base))              return  (uint32_t)0b11001000011111110000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 10) | ENCODE_MEM_OP_BASE(2, 5);
+        unreachable();
+    }},
+    {"ldxr", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b10001000010111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        if (pattern2(xr, mem_op_base))                  return (uint32_t)0b11001000010111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldxrb", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b00001000010111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
+        unreachable();
+    }},
+    {"ldxrh", [](Operand** operands, int operand_length) {
+        if (pattern2(wr, mem_op_base))                  return (uint32_t)0b01001000010111110111110000000000 | ENCODE_REGI(0, 0) | ENCODE_MEM_OP_BASE(1, 5);
         unreachable();
     }},
     {"lsl", [](Operand** operands, int operand_length) {
@@ -996,11 +1733,6 @@ struct Elf64_Phdr {
 #define SHF_ALLOC 0x2
 #define SHF_EXECINSTR 0x4
 
-// TODO
-// std::unordered_map<std::string, std::vector<uint8_t>> sections;
-// current_section = sections[section_name];
-// current_section.push_back(...);
-
 std::vector<uint32_t> code;
 uint8_t rodata[16] = {};
 
@@ -1206,18 +1938,288 @@ void generate_elf() {
     }
 }
 
-int main() {
-    code.reserve(10000000);
+struct Parser {
+    int idx;
+    int line;
+    std::string file_path;
+    std::string program;
+};
 
-    for (int i = 0; i < 10; i++) {
-        Operand** operands = new Operand*[5];
-        std::string instr = "add";
-        operands[0] = (new_regi(XR, "x1"));
-        operands[1] = (new_regi(XR, "x2"));
-        operands[2] = (new_imm(5));
+Parser* new_parser(std::string file_path, std::string program) {
+    Parser *p = new Parser;
+    p->program = program;
+    p->file_path = file_path;
+    p->idx = 0;
+    p->line = 1;
+    return p;
+}
 
-        code.push_back(instr_table[instr](operands, 3));
+[[noreturn]] void syntax_error(Parser* p, std::string msg) {
+    std::cerr << "\u001b[1m" << p->file_path << ":" << p->line << ": \x1b[91merror:\x1b[0m\u001b[1m " << msg << "\033[0m" << std::endl;
+    exit(1);
+}
+
+inline bool at_eof(Parser *p) {
+    return p->idx >= p->program.size();
+}
+
+inline void parser_advance(Parser *p, int n) {
+    p->idx += n;
+}
+
+void skip_white_space(Parser *p) {
+    while (!at_eof(p)) {
+        char c = p->program[p->idx];
+        if (c == ' ' || c == '\t') {
+            parser_advance(p, 1);
+        } else {
+            break;
+        }
     }
+}
+
+std::string read_ident(Parser* p) {
+    skip_white_space(p);
+
+    int start = p->idx;
+    while (std::isalpha(p->program[p->idx]) || std::isdigit(p->program[p->idx])) {
+        parser_advance(p, 1);
+    }
+
+    std::string str = p->program.substr(start, p->idx-start);
+
+    skip_white_space(p);
+
+    return str;
+}
+
+int read_number(Parser* p) {
+    skip_white_space(p);
+
+    int imm_val = 0;
+    while (std::isdigit(p->program[p->idx])) {
+        imm_val = imm_val * 10 + p->program[p->idx] - '0';
+        parser_advance(p, 1);
+    }
+
+    skip_white_space(p);
+
+    return imm_val;
+}
+
+inline Operand* parse_register(Parser* p) {
+
+    std::string ident = read_ident(p);
+    if (registers.find(ident) != registers.end()) {
+        skip_white_space(p);
+        return registers[ident];
+    }
+
+    syntax_error(p, "expected register operand");
+}
+
+inline Operand* parse_extend(Parser* p) {
+    std::string ident = read_ident(p);
+
+    if (extend_types.find(ident) != extend_types.end()) {
+        int extend_amout = 0;
+        if (p->program[p->idx] == '#') {
+            parser_advance(p, 1);
+            extend_amout = read_number(p);
+        }
+        return new_extend(extend_types[ident], extend_amout);
+    }
+
+    syntax_error(p, "expected extend operand");
+}
+
+inline Operand* parse_shift(Parser* p) {
+    std::string ident = read_ident(p);
+
+    if (shift_types.find(ident) != shift_types.end()) {
+        int shift_amout = 0;
+        if (p->program[p->idx] == '#') {
+            parser_advance(p, 1);
+            shift_amout = read_number(p);
+        }
+        return new_shift(shift_types[ident], shift_amout);
+    }
+
+    syntax_error(p, "expected shift operand");
+}
+
+/*
+    MEM_OP_BASE            -> [ register ]
+
+    MEM_OP_IMM_OFFSET      -> [ register, immediate ]
+
+    MEM_OP_IMM_OFFSET_PRE  -> [ register, immediate ]!
+
+    MEM_OP_REGI_OFFSET     -> [ register, register ]
+    MEM_OP_REGI_OFFSET     -> [ register, register, LSL #0 ]
+*/
+
+Operand* parse_operand(Parser* p) {
+    skip_white_space(p);
+
+    if (p->program[p->idx] == '#') {
+        parser_advance(p, 1);
+
+        int imm_val = read_number(p);
+
+        return new_imm(imm_val);
+    }
+
+    if (p->program[p->idx] == '[') {
+        Operand* mem_op = new Operand;
+        parser_advance(p, 1); // skip `[`
+        mem_op->base_register = parse_register(p);
+        switch (p->program[p->idx]) {
+            case ']':
+                mem_op->kind = MEM_OP_BASE;
+                break;
+            case ',':
+                parser_advance(p, 1); // skip `,`
+                skip_white_space(p);
+                if (p->program[p->idx] == '#') { // imm offset
+                    mem_op->kind = MEM_OP_IMM_OFFSET;
+                    parser_advance(p, 1); // skip `#`
+                    int imm_offset_val = read_number(p);
+                    mem_op->offset = new_imm(imm_offset_val);
+                } else { // register offset
+                    mem_op->kind = MEM_OP_REGI_OFFSET;
+                    mem_op->offset = parse_register(p);
+                    if (p->program[p->idx] == ',') {
+                        parser_advance(p, 1); // skip `,`
+                        mem_op->extend_offset = parse_extend(p);
+                    } else {
+                        mem_op->extend_offset = new_extend((ExtendType)0, 0);
+                    }
+                }
+                break;
+        }
+        if (p->program[p->idx] != ']') {
+            syntax_error(p, "expected `]`");
+        }
+        parser_advance(p, 1); // skip `]`
+        skip_white_space(p);
+        if (p->program[p->idx] == '!') {
+            switch (mem_op->kind) {
+                case MEM_OP_BASE:
+                    mem_op->kind = MEM_OP_BASE_PRE;
+                    break;
+                case MEM_OP_IMM_OFFSET:
+                    mem_op->kind = MEM_OP_IMM_OFFSET_PRE;
+                    break;
+                default:
+                    syntax_error(p, "expected `!`");
+            }
+            parser_advance(p, 1); // skip `!`
+        }
+        return mem_op;
+    }
+
+    std::string ident = read_ident(p);
+
+    if (registers.find(ident) != registers.end()) {
+        return registers[ident];
+    }
+
+    if (shift_types.find(ident) != shift_types.end()) {
+        int shift_amout = 0;
+        if (p->program[p->idx] == '#') {
+            parser_advance(p, 1);
+            shift_amout = read_number(p);
+        }
+        return new_shift(shift_types[ident], shift_amout);
+    }
+
+    if (extend_types.find(ident) != extend_types.end()) {
+        int extend_amout = 0;
+        if (p->program[p->idx] == '#') {
+            parser_advance(p, 1);
+            extend_amout = read_number(p);
+        }
+        return new_extend(extend_types[ident], extend_amout);
+    }
+
+    syntax_error(p, "unkown operand found");
+}
+
+void parse_program(Parser* p) {
+    while (!at_eof(p)) {
+        skip_white_space(p);
+
+        if (p->program[p->idx] == '\n') {
+            parser_advance(p, 1);
+            p->line++;
+            continue;
+        }
+
+        std::string instr_name = read_ident(p);
+
+        Operand** operands = new Operand*[5];
+
+        int operand_length = 0;
+        while (true) {
+            if (operand_length > 4) {
+                break;
+            }
+
+            operands[operand_length++] = parse_operand(p);
+            skip_white_space(p);
+            if (p->program[p->idx] == ',') {
+                parser_advance(p, 1);
+            } else {
+                break;
+            }
+        }
+
+        char c = p->program[p->idx];
+
+        if (c == '\n' || c == '\0') {
+            parser_advance(p, 1);
+            p->line++;
+        } else {
+            syntax_error(p, "expected a new line or EOF");
+        }
+
+        code.push_back(instr_table[instr_name](operands, operand_length));
+    }
+}
+
+std::string read_file(char* file_path) {
+    std::ifstream input_file(file_path);
+
+    if (!input_file.is_open()) {
+        std::cerr << "error: failed to open file: " << file_path << std::endl;
+        exit(1);
+    }
+
+    std::ostringstream file_content_stream;
+    file_content_stream << input_file.rdbuf();
+
+    input_file.close();
+
+    std::string file_content = file_content_stream.str();
+
+    return file_content;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 1) {
+        std::cerr << "error: no input file" << std::endl;
+        return 1;
+    }
+
+    char* file_path = argv[1];
+
+    std::string file_content = read_file(file_path);
+
+    code.reserve(5000000);
+
+    Parser* p = new_parser(file_path, file_content);
+    parse_program(p);
 
     generate_elf();
     return 0;
