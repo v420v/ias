@@ -1296,15 +1296,14 @@ static std::unordered_map<std::string, std::function<uint32_t(Operand**, int)>> 
         unreachable();
     }},
     {"mov", [](Operand** operands, int operand_length) {
-        // MOV (register)
         if (pattern2(wr, wr))                           return (uint32_t)0b00101010000000000000001111100000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 16); // #23
         if (pattern2(xr, xr))                           return (uint32_t)0b10101010000000000000001111100000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 16); // #23
-        // MOV (to/from SP)
         if (pattern2(wr_or_wsp, wr_or_wsp))             return (uint32_t)0b00010001000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5); // #8
         if (pattern2(xr_or_xsp, xr_or_xsp))             return (uint32_t)0b10010001000000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_REGI(1, 5); // #8
-        // MOV (inverted wide immediate)
-        // MOV (wide immediate)
-        // MOV (bitmask immediate)
+        // TODO: MOV (inverted wide immediate)
+        if (pattern2(wr, imm))                          return (uint32_t)0b01010010100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_IMM16(1, 5);
+        if (pattern2(xr, imm))                          return (uint32_t)0b11010010100000000000000000000000 | ENCODE_REGI(0, 0) | ENCODE_IMM16(1, 5);
+        // TODO: MOV (bitmask immediate)
         unreachable();
     }},
     {"movk", [](Operand** operands, int operand_length) {
