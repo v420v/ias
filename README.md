@@ -19,6 +19,8 @@ svc #0
 
 ```sh
 $ ./ias main.s > main.o
+$ ld -o main main.o
+$ ./main
 
 $ readelf -h main.o
 $ objdump -d main.o
