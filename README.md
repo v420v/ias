@@ -9,6 +9,14 @@ $ g++ -o ias main.cc -O3
 ```
 
 ## usage
+
+`main.s`
+```asm
+mov x0, #34
+mov w8, #93
+svc #0
+```
+
 ```sh
 $ ./ias main.s > main.o
 

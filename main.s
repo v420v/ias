@@ -1,4 +1,5 @@
 
-add x1, x3, #34
-add x1, x3, #35
+mov x0, #34
+mov w8, #93
+svc #0
 
